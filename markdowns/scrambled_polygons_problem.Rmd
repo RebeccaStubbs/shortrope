@@ -1,0 +1,159 @@
+---
+title: "Merges Making Maps into Meaningless Mires"
+author: "Rebecca Stubbs"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+---
+
+<style type="text/css">
+
+body{ /* Normal  */
+   font-size: 12px;
+}
+td {  /* Table  */
+   font-size: 8px;
+}
+h1 { /* Header 1 */
+ font-size: 35px;
+ color: Black;
+}
+h2 { /* Header 2 */
+ font-size: 20px;
+ color: Black;
+}
+h3 { /* Header 3 */
+ font-size: 16px;
+ color: Black;
+}
+code.r{ /* Code block */
+  font-size: 11px;
+}
+pre { /* Code block */
+  font-size: 10px
+}
+</style>
+
+```{r, include=F}
+library(RColorBrewer)
+library(maptools)
+library(rgdal)
+library(data.table)
+rm(list=ls())
+load("C:/Users/stubbsrw/Documents/us_counties_stubbs_gitrepo/woodson_mapping_suite/woodson_mapping_workspace.RData")
+source("C:/Users/stubbsrw/Documents/us_counties_stubbs_gitrepo/r_shared/woodson_mapping_suite/woodson_mapping_suite.R")
+new_england<-copy(state_map[state_map@data$state_name %in% c("Massachusetts","Maine","Vermont","New Hampshire","Connecticut", "Rhode Island","New York"),])
+new_england@data<-copy(new_england@data)
+new_england@data[,rand_order:=rnorm(nrow(new_england@data))]
+new_england<-new_england[order(new_england@data$rand_order),] # Sorting the entire object on level and location_i (this will sort both polygons and data).
+new_england@data<-copy(new_england@data)
+new_england@data[,rand_order:=NULL]
+new_england@data[,polygon_order:=seq(1,nrow(new_england@data))]
+plot(new_england[new_england@data$state_name=="Massachusetts",])
+
+spirits<-unique(merge(mcnty_map@data,us[year==2014,list(spirits_pc,mcnty)],by="mcnty")[state_name %in% c("Massachusetts","Maine","Vermont","New Hampshire","Connecticut", "Rhode Island","New York"),list(state_name,spirits_pc)])
+```
+
+
+## A case study of the Scrambled-data problem
+
+One of the bread-and-butter tasks of data analysis is relating one data source or type to another. In R, doing a "merge" of two data sets is straightforward and easy-- the command merge() uses one or more identifiers to attach two objects together. However, things get complicated when you start dealing with R's SpatialPolygonsDataFrame objects, and problems created by merges can be dificult to discover. Long story short, the only way in which the @data object and the @polygons objects are linked are through the order of the rows. If the order of the rows are altered (and the order of the polygons are not changed identically), the mapped data will no longer represent the values of the correct geographies.
+
+
+Let's say that you are interested in New England, and you have a shapefile for these states.
+
+### Plotting and viewing data before merge()
+
+```{r,fig.height=3, fig.width=7}
+plot(new_england, main="New England")
+```
+
+With the following ID fields/attributes:
+
+```{r}
+new_england@data
+```
+Note that the field "polygon order" has been added-- no such field regularly exists, but is included here as a reference for the original order of the data as they relate to the polygons. 
+
+If you would like, you can single out a specific state to make sure your IDs and map polygons match up:
+
+```{r,fig.height=3, fig.width=7}
+plot(new_england[new_england@data$state_name=="Massachusetts",],main="Massachusetts")
+```
+
+You are interested in mapping the amount of hard alcohol consumed per capita in these areas. As such, you have information from AEDS in 2014. 
+
+```{r}
+spirits
+```
+
+### Plotting and viewing data after a merge()
+
+You want to merge this data onto the attributes (@data slot) of the SpatialPolygonsDataFrame. Let's make a copy of the new_england SpatialPolygonsDataFrame to experiment. 
+```{r}
+new_england_copy<-copy(new_england)
+new_england_copy@data<-merge(new_england_copy@data,spirits,by="state_name")
+
+```
+
+We can use the wmap() function (contained within the woodson pallettes package) to map the values that exist within the data of the SpatialPolygonsDataFrame:
+
+```{r}
+wmap(chloropleth_map=new_england_copy, 
+           geog_id="state_name", 
+           variable="spirits_pc",
+            map_title="Spirits per capita in New England (after Merge)")
+```
+
+Looks plausible! But wait, isn't New Hampshire the state that has no liquor tax, not Vermont? What's happening here?! Let's do a spot-check:
+
+```{r,fig.height=3, fig.width=7}
+plot(new_england_copy[new_england_copy@data$state_name=="Massachusetts",],main="Massachusetts.. or is it?")
+```
+
+OH NO! That's Maine, not Massachusetts!!
+
+
+### Fixing the Problem
+
+A little-known consequence of using the merge() function is that *the new object will be automatically re-ordered based on the fields that you used to generate the merge.* We can see this if we check out the data of this new new_england_copy object after the merge-- the data is now alphabetized on state name, and the polygon_order is no longer sequential. 
+ 
+```{r}
+new_england_copy@data
+```
+
+Luckily, we can fix this, if we just re-order the data to correspond with the polygons ordering (that we have saved in our polygon_order column).
+
+```{r}
+new_england_copy@data<-copy(new_england_copy@data[order(polygon_order)])
+```
+
+Now we can plot Massachussetts again:
+
+```{r,,fig.height=3, fig.width=7}
+plot(new_england_copy[new_england_copy@data$state_name=="Massachusetts",],main="Massachusetts is Back")
+```
+
+Now, we can map with confidence:
+
+```{r}
+wmap(chloropleth_map=new_england_copy, 
+           geog_id="state_name", 
+           variable="spirits_pc",
+           map_title="Spirits per capita in New England (after ordering)")
+```
+
+For more solutions and strategies to solve and/or prevent this problem, please see the post on bringing spatial data into R. 
+
+### Using wmap() to never have to worry about this
+
+Also worth noting is that the wmap() function can merge on your data (provided a unique ID) and map your variables taking care of all of this under the hood-- let's try using the wmap() function and using the spirits data separately (not merged in):
+```{r}
+wmap(chloropleth_map=new_england, 
+     data=spirits,
+           geog_id="state_name", 
+           variable="spirits_pc",
+           map_title="Spirits per capita in New England (using wmap(), no merge needed)")
+```

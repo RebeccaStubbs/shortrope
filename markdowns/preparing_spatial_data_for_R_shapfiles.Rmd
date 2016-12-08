@@ -1,0 +1,360 @@
+---
+title: "Preparing (Vector) Spatial Data for R-- Shapefiles Edition"
+author: "Rebecca Stubbs"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+
+---
+
+<style type="text/css">
+
+body{ /* Normal  */
+   font-size: 12px;
+}
+td {  /* Table  */
+   font-size: 8px;
+}
+h1 { /* Header 1 */
+ font-size: 35px;
+ color: Black;
+}
+h2 { /* Header 2 */
+ font-size: 20px;
+ color: Black;
+}
+h3 { /* Header 3 */
+ font-size: 16px;
+ color: Black;
+}
+code.r{ /* Code block */
+  font-size: 11px;
+}
+pre { /* Code block */
+  font-size: 13px
+}
+</style>
+```{r, echo=FALSE, fig.height=8, fig.width=10, include=TRUE, warning=F, message=F}
+  rm(list=ls()) 
+
+# Getting rid of anything saved in your workspace 
+# Loading in required libraries
+ library(data.table)
+  library(maptools) # R package with useful map tools
+  library(rgeos) # "Geomegry Engine- Open Source (GEOS)"
+  library(rgdal) # "Geospatial Data Analysis Library (GDAL)"
+  
+ 
+ load("C:/Users/stubbsrw/Documents/us_counties_stubbs_gitrepo/r_shared/woodson_mapping_suite/gbd15.RData")
+ plot(gbd15[gbd15@data$level==3,])
+```
+
+
+## Thinking Spatially
+
+  Spatial data is awesome. Data with latitude and longitude are rich in relational information between data observations, and beautiful to visualize. Comparing one place on the earth to another often makes intuitive sense (how far away is A from B? Does C touch/overlap with D?), and the flavors of relationships you can create between data with geometries are nearly endless. Vastly different types of data can be combined and leveraged via space and location as a unique identifier rather than some kind of tabular key. However, the process of visualizing and analyzing geometry can have a steep learning curve; software like ArcGIS was created to make spatial visualization and analysis "easy" (although ArcGIS certainly has its own idyosincracies as well). 
+
+Broadly, there are two types of spatial data available-- vector data, and raster data. 
+
+### Points, Polygons, and Images, Oh My
+
+  Raster data is when a network or mesh of evenly spaced points are used to create a "surface" that describes some attribute of that space. Remotely sensed data using satellites to take primary data like land cover and climate data are often represented this way. They are mapped such that the center of the points form the center of a graph-paper like surface, where the value in the center of the point applies to the entire graph square. This creates the appearance of a surface of squares. The size of these squares (the amount of space each data point is assumed to represent) is refered to as the resolution-- if the squares are 5km by 5km, the raster is said to be at a 5km resolution. However, even this is an abstraction--the points are usually sampled such that they are evenly spaced in latitude and longitude, but these "squares" can look more irregular in some areas (such as at the poles) depending on what projection you are using. These spatial data often carry file extensions like .TIFF, .JPEG, although different software packages and governemnt agencies sometimes have their own proprietary formats. 
+
+  Vector data is when points, lines, and polygons are used to condense the natural and built world into geometric shapes. However, it is important to note that any given real-world object can be represented by a GIS  (geographic information system) in multiple ways-- the location of a cabin might be represented by a point, showing its location-- or by a square showing the footprint of the structure itself. Rivers and lakes can be abstracted to lines and polygons, but given that the width of a river might also be of importance, rivers might also be represented as polygons. The level of detail describing the line or polygon also influences the precision with which you can make inferences about shape, size, and relationships between data (is your lake represented using a clean oval, or exploring every nook and cranny of the wetlands?). Finding areas of similarity, or connecting the dots between raster data objects often is one way of condensing and simplifying raster data into patches or lines from a surface of points. 
+
+  It's relatively rare that researchers need to create the shapefiles and geometries used to abstact the real world themselves-- as such, you're probably stuck with what you've recieved, which may or may not be the ideal "representation of the real" for the process you plan to undertake. As such, remember not to take these spatial "truths" but so seriously-- your spatial data is probably somewhat imprecise, the locations described are most likely not as concrete as we imagine them to be, and human-created boundaries like borders are often arbitrary anyway. That said, using spatial relationships is usually still more interesting and useful than ignoring them. 
+
+  From a theoretical standpoint, the goal of most spatial data, and resulting analytic processes is to end up with a simplified version of the real relationships as they exist in the real world. Similar to the way that summary statistics are used to get a sense of what's going on in a non-spatial data set, summaries of spatial processes can be used to simplify what we know about how a variable exists in space. For example, knowing the spatially weighted average of where a species was observed each year (with weights as number of frogs observed per site) might give you a sense of whether the species is moving due to changing climate pressures. Relationships between two spatial variables, like area of intersections, or matrices of distances between points, are ways to condense complicated patterns (that are sometimes easy to recognize by eye) into data you can use in a regression model. 
+
+### A little bit on how shapefiles work
+
+One of the most pervasive spatial data types for vector data is the Shapefile. Created by ESRI (makers of the ArcGIS software), the shapefile is a format that consists of multiple different parts, creating one data type that is structured as if it has a multi-component soul. _Never_ move these files separately-- keep all of the files with the same name (regardless of extension) in the same directory. The (generally) most important parts/file extensions to know are described below:
+
+*Shapefile Horcruxes:* 
+
+* .shp - This contains all of the actual lat/lon locations of each point that goes into your vector data set
+
+* .dbf - The data attached to each point. If you want to see what's there you can open this type of file in excel--however, look but do not touch; _NEVER_ change any of the actual data by hand if you do this; despite appearances, this is not a .csv under the hood, and it's very possible you will be very sad that you have corrupted your file if you do this. 
+
+* .prj- This simple text file contains a string that describes what spatial projection your data is presented in. *This may or may not exist, but hopefully it does, or you'll need to figure out via research or guesswork what the projection information was before you analyze it.
+
+* .shx- Shapefiles break without this one (.shp, .shx, and .dbf are the only requried extensions), and it deals with spatial indexing, but there's no reason you need to interface with this in R. 
+
+There are plenty of other shapefile extensions (.atx, .ixs, .qix...) that may or may not exist for your file, and that you probably don't have to worry about.  
+
+### Loading in the data
+
+  Outside of using specially licenced software such as ArcGIS, most of the programatic ways of manipulating spatial data depend on the GDAL (Geospatial Data Analysis Library) and GEOS (Geometry Engine- Open Source) libraries. Many GIS users start off learning the basics of spatial analysis in ArcGIS, then transition to using more open source software like QGIS, (formerly known as Quantum GIS), Python, and R to accomplish the same goals faster, and with more customizability (without paying through the nose for a license). QGIS, Python, and R all ultimately call on the GEOS and GDAL packages under the hood. For basic, one-time-only spatial operations like buffers, intersections, clips, etc, it might be easier to simply do that operation in QGIS (or ArcGIS if you have it) than to mess with this nonsense. 
+
+  However, ArcGIS and QGIS don't have a way to loop and iterate through data when creating a map (although both have functionalities to print "atlases", this is less useful for researchers that want to see different data portrayed within a similar template quickly). So, at the very least, it's good to know how to load Shapefiles into R for data visualization alone. 
+
+  This is designed to be an example of how to read in, manipulate, and prepare spatial data for use in R. This example uses a clean (no messed up geometries) shapefile, with valid topology.
+
+
+#### Calling upon appropriate libraries, clearing the work space, and discovering where the files are located (the "root" of the file paths).
+
+```{r, warning=F, message=F}
+  library(data.table) #
+  library(maptools) # R package with useful map tools
+  library(rgeos) # "Geomegry Engine- Open Source (GEOS)"
+  library(rgdal) # "Geospatial Data Analysis Library (GDAL)"
+  
+# Getting rid of anything saved in your workspace 
+  rm(list=ls()) 
+```
+
+#### Loading in a shapefile
+
+There are many ways to load spatial data into R-- however, one of the most straightforward is to use the readOGR function, since it also reads in the projection information (if it exists). 
+```{r}
+shapefile_name<-"cb_2013_us_county_20m"
+indir <- "J:/DATA/Incoming Data/USA/sae_data/cb_2013_us_county_20m/" # Defining the directory that contains the shapefile you are interested in
+map <- readOGR(paste0(indir, shapefile_name,".shp"), layer=shapefile_name) 
+```
+
+
+Our first check should be to see if the spatial geometry is valid:
+```{r}
+validity<-data.table(valid=gIsValid(map,byid=TRUE))
+sum(validity$valid==F)
+```  
+
+Lucky for us, the sum of the geometry problems is 0-- If you start getting errors about invalid geometries, my recommendation is to a.) Find a friend that has an ArcGIS license, and use the "repair geometries" feature, and/or b.) talk to someone that's good at troubleshooting spatial data--- fixing invalid geometries is tough to do in R, or c.) prepare for a long road with many struggles. Another good start is do a UnionSpatialPolygons operation on the geographic ID of interest- that sometimes gets rid of topology errors as well (see below).
+   
+   
+At this point, the map object is a Large SpatialPolygonsDataFrame. Just as there are multiple parts to a shapefile, there are multiple components of this data type. There is a polygons object, which we can access using map@polygons, and a data object, which we can access using map@data. A quick summary() will tell us what fields are within the data attributes of this file, what the projection information is, and the bounding box (x/y extent) of the geometry itself. We can also use R's native plot() function to do a preliminary exploration of what this data looks like over space.
+
+```{r}
+summary(map)
+plot(map, main="Map")
+```
+
+Looks pretty tiny and awkward right now, but that can be fixed later.
+
+## Creating and manipulating data fields within the geography's attributes
+
+This map is a "Large SpatialPolygonsDataFrame"-- an R object that contains both geographic information, and any fields/data attached to those geographies (like data, ID fields, etc). You can do operations that use the geographic information (for example, calculate the area of each polygon), or change, alter, or add to the data attached. 
+
+Probably *the most crucial thing* to realize about this data format is that the shapes (polyons, points, etc) are linked to the data through the sort order of the polygon objects and the data objects. I could scramble the "@data" object, and I could still plot a map with colors--however, I could be plotting Nevada's values in Massachussetts, and if you don't have the expert knowlege to know that something seems "off", your entire analysis can be totally bunk due to sort order issues. Many of the ways we manipulate and merge data might seem overly complex-- this is to prevent the sort order from becoming lost, and to preserve the geometry-attribute link's validity. 
+
+You can access the data attached to the shapefile by calling the "data" attribute from the Spatial Polygons Data Frame:
+```{r}
+head(map@data)
+```
+
+Right now, the data object is a data.frame. It might be useful to change the data object to a data.table: this allows us to use data.table and data.frame methods! To do this, we first convert the data.frame into a data.table by calling data.table(map@data), then take a copy of it, and reassign the "data" slot of the map object to be the data.table version. 
+
+We take a copy here because of the way that data.table works-- it stores an object in memory, which makes it fast to access, but also means that any operation done to a subset of that data.table (that isn't explicitly copied as a separate object) will also be done to the original object in memory. 
+```{r}
+map@data<-copy(data.table(map@data))
+```
+
+We can add columns to the data table based on other columns using data.table syntax (which preserves the current order of the rows):
+
+```{r}
+map@data[, name_caps:=toupper(NAME)] # say we wanted to create a new column that had the county names in all caps-- we can add that using data.table syntax
+map@data[, ALAND:=NULL] # Similarly, we can remove columns... 
+head(map@data)
+```
+
+It also might be useful to simplify the information contained by the spatial polygons data frame: we can save the data itself in another object, and restrict the spatial object to only an ID field, such that we could add the other information back in as desired:
+
+```{r}
+map@data[, geo_id:= as.integer(as.character(map@data$GEOID))] #first, let's make an ID that we can use to join data on later
+map_data<-copy(map@data) #now we have a data.table of the county information devoid of geographic attributes
+map@data<-copy(map@data[,list(geo_id)]) # Resticting the data.table attached to the spatial information to only relevant fields.
+    ## We are taking a copy here before reassigning it because of reasons detailed above (a data.table is an object stored in memory, 
+    ## without taking a copy here, we are creating a "shallow copy", which R won't like to change later on)
+
+head(map@data) # Should only include the ID
+
+head(map_data) # Includes the geo_id, and the rest of the data we may or may not want to use later.
+```
+
+At this point, we can save that map_data as a separate .csv or .rdata, merge it in later, ditch it altogether-- in general, it's good practice to keep your spatial data "light" on attributes, and only keep variables that help you identify the geometries-- after all, you can always merge in the other data later. 
+
+## Merging other data onto a SpatialPolygonsDataTable
+
+Right now, you have rows of data that corresponds to each spatial record. These data are linked to the spatial information by *the order they are in the table*, since that corresponds to the order of the relevant polygons. This can get tricky, since merges in R will automatically default to sorting the resulting data.table after a merge based on whatever ID field you used to merge on your secondary data set. This is problematic, because when you merge in new information into the data.table linked to the polygons, the polygon order doesn't update to mesh with the new data. 
+
+As discussed above, if you use this out-of-order data set for analysis, you'll still get values for each polygon--but they won't actually correspond to the right geography! Luckily, We can take some defensive steps to make sure we don't get "out of sync" between the geography and the data. If this were a data.frame, we could assign the row.names() to something meaningful-- but rownames aren't supported in data.tables (we can just use a column!), and we can generate a column to revert back to later on. 
+
+One way of achieving this security is to sort your entire spatial data object based on the geo_id you plan to use for any merges down the line. 
+
+At this point, the entire spatial object (polygons and data), are ordered by the geog_ id we have specified. This means that at any point in the future, we can use this geo_id field to sort our data.table, and re-arrange our data object to make sure it matches up to the geography. 
+
+```{r}
+map<-copy(map[order(map@data$geo_id),]) # Assigning the "map" object to be the sorted (on our geog_id) version of the "map" object.
+# Right now ,the data.table being used is considered to be a "shallow copy"
+# of the data.table from the unsorted object-- we can overwrite this with a
+# copy of the map@data object and get rid of this problem.
+map@data<-copy(map@data)
+head(map@data)
+```
+
+If you don't want to use this method, because you aren't sure what attribute you'll be merging on in the future, or some other reason, you can also create a new column to use as a home base and re-sort your data.table on. After any manipulations that you do, to make sure that your values correspond correctly with your geography. As of right now, we haven't done anything to change the order of the data or geography, so we can create an index from 1:(n_rows) that we can use to "revert" back to normal later on (just in case!).
+
+```{r}
+map@data[,sort_order:= 1:nrow(map@data)] # Creating the index that goes from 1-the length of the data.table
+head(map@data)
+```
+
+Now that we are confident we won't get the geometry mixed up by adding in some data, let's add back in a few of the variables we stashed away in the separate data.table called map_data:
+
+```{r}
+map@data<-copy(merge(map@data,map_data,by="geo_id"))
+head(map@data)
+```
+
+Note that the data you are adding on should never have more than 1 observation per geog_ id! Remember that the polygons are linked to the data by order-- we can't (sensibly) have more data than we have polygons.
+
+## Sub-setting the spatial polygons data frame: picking geographic areas that are of interest to you, or excluding them
+
+The relevant thing here is that you can query the spatial polygons data object's data, and used it to subset the spatialpolygons object-- including the geographic boundary information! Let's get rid of Puerto Rico:
+
+```{r}
+map <- map[map@data$geo_id < 60000,] # Dropping Puerto Rico by only keeping rows that had geo_id values less than 60000
+```
+
+Similarly, we could plot only some section of this data file, or save a subset of the file to another object- let's use the attributes to find Washington State's Counties only.
+
+```{r}
+    washington<-copy(map[map@data$STATEFP==53,])
+    plot(washington, main="Washington State")
+```
+
+## Changing the Map's Projection
+
+It's sometimes useful to know or alter the projection used for the map. To discover what the map's projection is currently, is you use the command  proj4string(map). 
+```{r}
+proj4string(washington)
+```
+In this case, the projection is "longlat"-- basically, not a projection; it's just using the latitude and longitude as a coordinate system. See: http://www.georeference.org/doc/latitude_longitude_projection.htm as a further reference about different projetions. Plenty of resources are available on geographic projections--the important thing to keep in mind is that all projections (putting an "oblate spheroid" like the earth onto a 2d surface) are frought with choices about what to distort and where. 
+
+See: https://en.wikipedia.org/wiki/Map_projection#Which_projection_is_best.3F
+  
+What does this projection look like? 
+
+```{r}
+plot(washington, main="Original Projection")
+```
+
+Luckily,changing this projection is trivial in R.
+
+```{r}  
+  # Defining the new projection you want to use:
+    new_projection<-"+proj=laea +lat_0=45 +lon_0=-100 +x_0=0 +y_0=0 +a=6370997 +b=6370997 +units=m +no_defs" 
+    # This is the Lambert Azimuthal Equal Area projection-- a projection known for keeping the area of the geographic units true to reality.
+    # You can probably find whatever projection you want to use's "PROJ.4 STRING" at: http://spatialreference.org/
+  
+  # Actually transform the object
+    washington <- spTransform(washington, CRS(new_projection)) # spTransform: spatial transform of coordinates from one system to antoher 
+  
+  # What does it look like now?
+    plot(washington,main="New Projection")
+```
+
+However, we still need to create a copy() of the data.table and reassign it to the Washington object, or else it won't allow us to make changes to the data.table later on (it will throw an error about a "shallow copy" of the data table.)
+
+```{r}
+    washington@data<-copy(washington@data)
+```
+## Calculating fields based on geographic attributes
+
+Let's say you want to know how much area is in each county-- you can create a new data field based on the geographic information. This gArea function calls from the rgeos package: units of this projection is "meters" (see the +units section of the proj4 string), so this should give us Km when we divide by 1000000:
+```{r}
+washington@data[,area_sqkm:=gArea(washington,byid=TRUE)/1000000]
+head(washington@data)
+```
+
+
+## Simplifying the geometry of the geographic information
+
+Often, shapefiles will have more detail than is necessary for cartographic mapping-- this can make things slow to plot, and generally cumbersome. To fix this, we can use gSimplify(). 
+
+To see the impacts, let's take a look at the impacts of gSimplify up close-- on the counties within Washington only.
+
+```{r}
+object.size(washington) #how big in bytes is this object before simplification?
+plot(washington,main="Original Geometry")
+
+washington.simple<-gSimplify(washington,tol=500,topologyPreserve=TRUE)
+object.size(washington.simple) #how big in bytes is this object after simplification?
+plot(washington.simple,main="Simplified")
+    #tol: tolerance (higher=simpler)
+    #topologyPreserve: if true, attempts to keep topology (relationships between counties, etc) the same.
+```
+
+Once you've simplified a shape, you no longer should use it for analysis-- there might be gaps between borders, and the precision for where things are in the real world has been lost. From the point that you have simplified the geometry onward, it should be used for cartography ONLY. 
+
+Let's apply that amount of smoothing to the rest of the the US, and see how much size we "save":
+
+```{r}
+object.size(map) #how big in bytes is this object before simplification?
+
+us.simple<-gSimplify(map,tol=500,topologyPreserve=TRUE)
+object.size(us.simple) #how big in bytes is this object after simplification?
+plot(us.simple,main="Simplified")
+```
+
+Holy crow, look at Alaska! Obviously, the tolerance that looks good for some areas is not appropriate for others-- keep on the lookout for things that look strange, and use as high of tolerance as still looks good to you. 
+
+## Merging Polygons Together
+
+Shapefiles can have two types of polygons-- single part (just one lake), or multipart (a lake and a tiny lake that count as the same object as far as attributes are concerned). Sometimes, when you load in your data, you might notice thousands of polygons, with lots of duplicates. This indicates that your multipart polygons were read in as individual objects. Luckily, we can collapse these back together into a sensible object!
+
+Let's take a look at a composite shapefile for both national and subnational areas that are contained within the same shapefile.
+
+```{r}
+gbd15 <- readOGR("C:/Users/stubbsrw/Documents/Geospatial_Data/GBD_boundaries/gbd15_all_levels_single_polygon_03032016.shp", layer="gbd15_all_levels_single_polygon_03032016") 
+```
+
+Over 6 thousand features! Let's collapse those down to something sensible.
+
+First, let's convert the data object into a data.table, and save it into a separate data.table for use later. 
+```{r}
+ gbd15<-gbd15[order(gbd15@data$level,gbd15@data$location_i),] # Re-assigning the "map" object to be the sorted (on location_id) version of the "map" object.
+  gbd15@data<-data.table(gbd15@data) #Converting the data object to a data.table
+  gbd15data<-unique(copy(gbd15@data))#Saving a copy of the data.table (but only the unique observations!)
+  gbd15@data[, ihme_lc_id:=as.character(ihme_lc_id)] # Replacing the location ID as a charecter version of location ID
+```
+
+Now, we will use a particular field of the attributes (in this case, ihme_ lc_ id) aggregate many single-part polygons into multipart polgyons. You also can want to merge together polygons for more normal reasons-- say you had a shapefile with counties, and wanted a shapefile of states-- since counties nest within states, you could UnionSpatialPolygons on the State ID and you would end up with a State Shapefile. This is a good strategy if you want to highlight borders of a geography of admin levels above your data of interest-- that way, you are guaruanteed to have the same border lines as the smaller geography. 
+
+```{r}
+map <- unionSpatialPolygons(gbd15, gbd15@data$ihme_lc_id) 
+```
+
+At this point, "map" is a SpatialPolygons object-- without any data attributes at all. However, the polygon ID of this new SpatialPolygons is the identifier you used to combine geometry before-- we can use this to recover and create a data.table, and add the rest of our data back on. Interestingly, to join together data and polygons to create a SpatialPolygonsDataFrame, you need the row names to match up. As such, we create a data.frame with the same row names. 
+
+```{r}
+data <- data.frame(ihme_lc_id = (sapply(map@polygons, function(x) x@ID)))
+  rownames(data) <- data$ihme_lc_id
+```
+
+Now, we can create a SpatialPolygonsDataFrame using the map and data objects:
+```{r}
+  gbd15 <- SpatialPolygonsDataFrame(map, data)
+```
+
+At this point, we follow familiar steps to merge the data back on.
+```{r}
+gbd15 <- gbd15[order(gbd15@data$ihme_lc_id),]
+gbd15@data$polygon_sort_order<-1:nrow(gbd15@data) # Creating the index that goes from 1-the length of the data.table, such that order can be preserved!
+
+## Merging back on the attributes after having collapsed by location ID
+  gbd15@data<-merge(gbd15@data,gbd15data,by="ihme_lc_id",all.x=TRUE, all.y=FALSE)
+  gbd15@data<-data.table(gbd15@data)
+
+# Let's also fix the attribute names:
+setnames(gbd15@data,"location_i","location_id") 
+
+head(gbd15@data)
+
+plot(gbd15[gbd15@data$level==3,], main="Nations of the World")
+```
+
+Got anything else you want added to this document? Contact Rebecca Stubbs at stubbsrw@gmail.com.
+
