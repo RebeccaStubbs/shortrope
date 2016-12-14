@@ -2,42 +2,72 @@
 title: 'Finding Distribution Parameters of Simple Data Sets in R and TMB'
 author: "Rebecca Stubbs"
 date: "Tuesday, December 06, 2016"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
 ---
+
+<style type="text/css">
+
+body{ /* Normal  */
+   font-size: 12px;
+}
+td {  /* Table  */
+   font-size: 8px;
+}
+h1 { /* Header 1 */
+ font-size: 35px;
+ color: Black;
+}
+h2 { /* Header 2 */
+ font-size: 20px;
+ color: Black;
+}
+h3 { /* Header 3 */
+ font-size: 16px;
+ color: Black;
+}
+code.r{ /* Code block */
+  font-size: 11px;
+}
+pre { /* Code block */
+  font-size: 13px
+}
+</style>
 
 
 The TMB library is a link that allows the high-level, statistically-oriented programming language R to interface with the computational speed of C++ for calculating likelihood. This example walks through how to generate simple parameter estimates for different distributions using R, then Template Model Builder.
 
-Unlike many of the function calls in R and regression and modeling packages available on CRAN, using Template Model Builder requires you to literally write out the equations to calculate your likelihood in order to run a model. As such, this page goes into the weeds of how to calculate joint negative log likelihood in R first (familiar territory), then switches to TMB in hopes that it will make the C++ versions more intelligible. 
+Unlike many of the function calls in R and regression and modeling packages available on CRAN, using Template Model Builder requires you to literally write out the equations to calculate your likelihood in order to run a model. As such, this page goes into the weeds of how to calculate joint negative log likelihood in R first (familiar territory), then switches to TMB in hopes that it will make the C++ versions more intelligible.
+
+My hope is that this document can serve the foundation of an understanding of to use TMB, by starting from the ground up. 
+
+# Starting out in R
 
 So, let's start by getting a workspace set up: loading the required libraries, etc. 
+
 ```{r setup, include=TRUE, message=FALSE, warning=F}
 rm(list=ls()) # Removing everything from the R workspace
 library(TMB) # Template model builder
-library(ggplot2) # Plotting package
 library(data.table) #data manipulation package
-library(ggthemes)
+library(ggplot2) # Plotting package
+library(ggthemes) # makes plots more elegant
 ```
 
 ## Simulating some data
 
-First, let's create 3 data sets, where we know ahead of time what the distribution parameters are. This has the advantage of allowing the programmer to know ahead of time what the "right answer" for parameters should be, which will allow us to check our code for errors.
+First, let's create a data set, where we know ahead of time what the distribution parameters are. This has the advantage of allowing the programmer to know ahead of time what the "right answer" for parameters should be, which will allow us to check our code for errors.
 
+To keep things simple, we'll start out with data sampled from a normal distribution. 
 ```{r, include=TRUE}
-
-simulated_data<-data.table(
-                           
-sim_norm=rnorm(1000,50,6), # Generating a column witihn the data set ("sim_norm") that has 1000 observations 
-                          # pulled from a normal distribution of mean 50, with a standard deviation of 6
-
-sim_pois=rpois(1000,10),  # Generating a column ("sim_poisson") that has 1000 observations 
-                          # pulled from a poisson distribution with a lambda (expected count) of 10.
-
-sim_beta=rbeta(1000,70,3)) # Generating a column ("sim_beta") that has 1000 observations 
-                          # pulled from a beta distribution with parameters a=70, b=3
+simulated_data<-data.table(sim_norm=rnorm(10000,50,6)) 
+    # Generating a column witihn the data set ("sim_norm") that has 10000 observations 
+    # pulled from a normal distribution of mean 50, with a standard deviation of 6
 ```
 
-## Figuring out their parameters using R
+## Likelihood overview
 
 Let's say for the sake of example that you *don't* already know the distribution parameters that were used to create these data sets, and you wanted to find out. To do this, we could roughly use the following process:
 
@@ -61,7 +91,8 @@ Let's use R's "dnorm" function to evaluate how likely it is that an individual p
 ggplot(data=simulated_data)+
   geom_density(aes(sim_norm))+
   geom_vline(xintercept=48,colour='red')+
-  labs(title="A Likely Data Point (red)")+theme_tufte()
+  labs(title="A Likely Data Point (red)")+
+  theme_tufte()
 
 # Discovering the likelihood of the number 48 being 
 # generated from a normal distribution with  
@@ -81,7 +112,7 @@ dnorm(75,50,6)
 
 As expected, the likelihood of the data point farther away from the mean is smaller. But that's just one data point-- what if you have a set of numbers that you think could have been generated from a given distribution?
 
-## How low can you go: Optimizing the Joint Negative Log Likelihood
+## Calculating the likelihood of multiple data points all coming from the same distribution
 
 To evaluate the likelihood of the whole data set, we evaluate each data point's probability of having been generated from that distribution, and then combine the probabilities. When evaluating the probability of mulitple events, you need to multiply the probabilities together to get the likelihood that all of the events will occur. However, multiplication is computationally expensive as the numbers get very large-- so, instead of multiplying things together, we use the handy math trick of log-transforming the likelihood, which then allows the probabilities to be added together rather than multiplied. 
 
@@ -90,13 +121,19 @@ This creates a "joint log likelihood". This number would be positive-- however, 
 So, to calculate the JNLL of a data set given a set of parameters, you could do something like the following:
 
 ```{r}
-# Defining a function to calculate the JNLL
-calc_jnll<-function(the_dataset,mean_param,sd_param){
+# JNLL function Version #1
+
+# Defining a function to calculate the JNLL, containing input data, and parameters in a list:
+jnll_norm<-function(data,parameters){
+  
+  mean_param<-parameters[1] # This function knows the first object in the list is going to be our parameter guess for the mean
+  sd_param<-parameters[2] # and the second object will be our guess for the standard deviation
+  
   jnll<-0 # Setting the Joint Negative Log likelihood to Zero -- throughout the loop,
           # this will get increasingly negative as each log-likleihood is subtracted from it
-  for (each_datapoint in the_dataset){ # Creating a loop through each data point
+  for (each_datapoint in data){ # Creating a loop through each data point
     #Find the likelihood of that point
-    #having log=TRUE means that it will return the log likelihood 
+    #having log=TRUE means that it will return the negative log likelihood 
       likelihood_of_single_point<-dnorm(each_datapoint,mean_param,sd_param,log=TRUE) 
     # Subtract that from the jnll
       jnll<-jnll-likelihood_of_single_point
@@ -107,10 +144,15 @@ calc_jnll<-function(the_dataset,mean_param,sd_param){
 
 A far more efficient way of calculating this would be to pass the vector of data values, rather than a single data point, to the dnorm function:
 ```{r}
-# Defining a more efficient function to calculate the JNLL
-calc_jnll_fn<-function(data_vector,mean_param,sd_param){
-  vector_of_likelihoods<-dnorm(data_vector,mean_param,sd_param,log=TRUE) #the dnorm() function can take a vector!
-  jnll<- -1 * sum(vector_of_likelihoods) # now, we just make the 
+# JNLL function Version #2
+jnll_norm<-function(data,parameters){
+  
+  mean_param<-parameters[1]
+  sd_param<-parameters[2]
+  
+  vector_of_likelihoods<-dnorm(data,mean_param,sd_param,log=TRUE) #the dnorm() function can take a vector!
+  jnll<- -1*sum(vector_of_likelihoods) # now, we just add together the negative log liklihoods produced by dnorm() above
+  
   return(jnll)
 }
 ```
@@ -121,48 +163,369 @@ Let's test out this function on three different guesses, and visualize the guess
 # Creating a data set based on the "real" (simulated) values, and the 
 # creating data sets that would occur from distributions based on 2 parameter guesses
 jnll_vis<-rbind(data.table(data=simulated_data$sim_norm, type="Simulated Data (mean=50,sd=6)"),
-                data.table(data=rnorm(1000,40,10), type="Guess #1 (mean=40,sd=10)"),
-                data.table(data=rnorm(1000,55,5), type="Guess #2 (mean=55,sd=5)"),
-                data.table(data=rnorm(1000,50,6), type="Guess #3 (mean=50,sd=6)"))
+                data.table(data=rnorm(10000,40,10), type="Guess #1 (mean=40,sd=10)"),
+                data.table(data=rnorm(10000,55,5), type="Guess #2 (mean=55,sd=5)"),
+                data.table(data=rnorm(10000,50,6), type="Guess #3 (mean=50,sd=6)"))
 
 ggplot(data=jnll_vis)+
   geom_density(aes(data,colour=type))+
   labs(title="Data vs. Parameter Guesses")
 ```
 
-It looks like we would imagine that the third guess (which in truth, we are the parameters used to generate the siumulated data set), but let's check which guess has the lowest joint negative log-likelihood:
+It looks like we would imagine that the third guess (which are the parameter values used to simulate the data in the first place), but let's check which guess has the lowest joint negative log-likelihood:
 
 ```{r}
 # Guess #1
-calc_jnll_fn(data_vector=simulated_data$sim_norm,mean_param=40,sd_param=10)
+jnll_norm(data=simulated_data$sim_norm,parameters=c(40,10))
 
 # Guess #2
-calc_jnll_fn(data_vector=simulated_data$sim_norm,mean_param=55,sd_param=5)
+jnll_norm(data=simulated_data$sim_norm,parameters=c(55,5))
 
 # Guess #3
-calc_jnll_fn(data_vector=simulated_data$sim_norm,mean_param=50,sd_param=6)
+jnll_norm(data=simulated_data$sim_norm,parameters=c(50,6))
 ```
 
 Looks like Guess # 3 (the true distribution parameters) wins out! But, that guess-and-check method is certainly far from ideal. Luckily, R has optimizers that can search through "parameter space" and find the combinations that achieve the lowest JNLL.  So, let's try using one of R's optimizers to find out what distribution our simulated data came from. 
 
 
-Let's check out using optim, a function in the {stats} library in R, which is automatically loaded, to do our guesswork for us (and more ingelligently).
+## How low can you go: Optimizing the JNLL
+
+We'll use optim(), a function in the {stats} library in R, which is automatically loaded, to do our guesswork for us (and more intelligently).
+
+When we're guessing at a mean and standard deviation parameter as intelligent human scientists, we realize that there's no such thing as a negative standard deviation. However, an optimizer just searching through paramater space isn't that smart, and it could try giving our optimization function negative values for our standard deviation parameter, which breaks the dnorm() function an produces NaN:
 
 ```{r}
+dnorm(10,4,-1)
+```
 
-# First, let's get a starting guess:
-starting_guesses<-list("mean_param"=100,"sd_param"=0)
+So, we need to modify our function to calculate the JNLL to safeguard it from the fact that we want our optimizers to be searching through *ALL* of parameter space-- negative to positive infinity. Lucky for us, we can use the log transform/exponentiation to make sure the parameter passed to dnorm is positive:
 
+```{r}
+dnorm(10,4,exp(-1))
+```
 
-# Now, we can use the otim() function in R to try to find better parameters to describe the data. 
-Opt <- optim(par=starting_guesses, fn=calc_jnll_fn, Data=simulated_data$sim_norm)
+Much better. Let's put this idea into action by modifying our JNLL function:
 
-print(Opt$par) # Estimated parameters
-#print(sqrt(diag(solve(Opt$hessian))))# This pulls the hessian matrix, "solves (aka. takes the inverse of it) it", 
-# then takes the diagonal, and square roots it. 
-
-
+```{r} 
+# JNLL function Version #3
+jnll_norm<-function(data,parameters){
+  
+  mean_param<-parameters[1]
+  sd_param<-exp(parameters[2]) #**** CHANGE HERE****: the sd_param has been exponentiated
+  
+  vector_of_likelihoods<-dnorm(data,mean_param,sd_param,log=TRUE) 
+  jnll<- -1*sum(vector_of_likelihoods)
+  
+  return(jnll)
+}
 ```
 
 
+Note that this means that when the optimizer returns what it thinks the best values are for our parameters, it will actually be returning the **log** of the standard deviation parameter. 
+
+With this in mind, it's time to put one of R's optimizers into action! We can pass our data, starting guesses, and function that we need to minimize to optim(). We save the output of this function into an object I'm calling Opt (for optimized).
+
+
+```{r}
+# Now, we can use the optim() function in R to try to find better parameters to describe the data. 
+Opt <- optim(par=c(0,0), # "par" needs to be a vector or list, with your starting guesses
+                                            # ordered the same as how you define your parameters (in this case, 
+                                            # mean first, standard deviation second).
+             fn=jnll_norm, # "fn" is the function you are using to calculate JNLL
+             data=simulated_data$sim_norm) 
+```
+
+It's worth noting that we include this "data=..." argument in our call to optim() because our JNLL function includes the *name* "data" for one of it's function arguments. If for, example, your function had differently named arguments, your function and call to optim() might have looked like this: 
+
+```{r}
+# equally valid, yet ridiculous function and optimization call
+  silly_names<-function(bumblebee_flight_paths,wild_guesses){
+    center<-wild_guesses[1]
+    noise<-exp(wild_guesses[2]) 
+    return(-1*sum(dnorm(bumblebee_flight_paths,center,noise,log=TRUE) ))
+  }
+
+  Opt_silly <- optim(par=c(0,0), # The"par" argument needs to keep the same name, no matter how you've named
+                                  # the parameter argument in your function. 
+               fn=silly_names, # "fn" is stays the same as well
+               bumblebee_flight_paths=simulated_data$sim_norm) # but the argument you use to enter your data changes
+```
+
+So, what's in Opt? 
+
+```{r}
+names(Opt)
+```
+
+For now, let's concentrate on two of the named objects within Opt-- "par", and "value". "par" contains a vector of the parameter estimates that the optimizer thought minimized the JNLL, in the same order they were entered into the function. "value" contains the ending JNLL that the optimizer achieved.
+
+```{r}
+Opt$value
+```
+
+This isn't inherently meaningful by itself, but we can use this likelihood value to compare this distribution to other distributions or models. 
+
+```{r}
+Opt$par
+```
+
+And there are our estimates for the mean and standard deviation! We know that this simulated data set was created using mean=50, and sd=6. So, why is our standard deviation parameter too small? 
+
+..Because it's actually returning the log() of our standard deviation parameter! Let's check out the log() of our optimizer's best guess and see if matches up with what we expect (something around 6):
+
+```{r}
+exp(Opt$par[2])
+```
+
+Much better. However, remembering which parameters need to be transformed can be tricky, which is one reason to used named lists in both your JNLL function and your list of parameters to make sure you understand your outputs. 
+
+### Tip: Using Named Lists to Keep Track of your Parameters
+
+Instead of simply passing your JNLL function a vector of starting guesses, you can used named lists in order to create some clarity and create a more readable output. 
+
+```{r}
+# JNLL function Version #4
+jnll_norm<-function(data,parameters){
+  
+  mean_param<-parameters["mean"]
+  sd_param<-exp(parameters["log_sd"])
+  
+  vector_of_likelihoods<-dnorm(data,mean_param,sd_param,log=TRUE) 
+  jnll<- -1*sum(vector_of_likelihoods)
+  return(jnll)
+}
+
+Opt <- optim(par=list("log_sd"=0,"mean"=0), # Now, this list needs to contain the named elements you specify in your 
+                                            # function-- the order doesn't matter.
+             fn=jnll_norm, # "fn" is the funciton you are using to calculate JNLL
+             data=simulated_data$sim_norm)
+
+Opt$par
+```
+
+## Organizing your results
+
+### Tip: Saving your parameters as a data.table
+
+The following function will return your parameter values as a more convenient data format-- a data.table, with another column for any parameter transformations that we need (specifically, if the variable that the optimizer spits out is actually the exponentiated version, we need to do a log-transform).
+
+```{r}
+get_params<-function(optimized){
+  # pulling the parameter estimates into a data table with columns for names and values
+  params<-data.table(names=names(optimized$par),values=optimized$par)
+  # adding the transformed versions into another column (if necessary) 
+  params[grepl("log_",names)==T,trans:=exp(values)] #This selects all rows where "log_" is included in the 
+  # charecter string in the column "names", and then generates another column where those values are 
+  # exponentiated-- any parameter name that doesn't have log_ in it will not be NA in that coulumn.
+                                                      
+  return(params)
+}
+
+parameters<-get_params(Opt)
+print(parameters)
+```
+
+## Branching out to other distributions
+
+For this example so far, we've only looked at the normal distribution. Here's an example of the same essential process, but this time, with a beta distribution:
+
+```{r}
+simulated_data[,sim_beta:=rbeta(10000,70,3)]
+  # Generating a column ("sim_beta") that has 10000 observations 
+  # pulled from a beta distribution with parameters a=70, b=3
+
+jnll_beta<-function(data,parameters){
+  # Now we have two parameters that determine the shape of the
+  # beta disribtion, and both need to be positive, so both get exponentiated.
+  
+  shape1<-exp(parameters["log_shape1"])
+  shape2<-exp(parameters["log_shape2"])
+
+
+  vector_of_likelihoods<-dbeta(data,shape1,shape2,log=TRUE) 
+  jnll<- -1*sum(vector_of_likelihoods)
+  return(jnll)
+}
+
+Opt_beta <- optim(par=list("log_shape1"=0,"log_shape2"=0), 
+             fn=jnll_beta,
+             data=simulated_data$sim_beta)
+
+params<-get_params(Opt_beta)
+print(params)
+```
+
+# Shifting gears to TMB
+
+What if your data set was really, really large, and you wanted to use the power of C++ to achieve a similar goal? TMB allows for this, and more. 
+
+TMB allows you to write your objective function (to calculate joint negative log likelihood) in C++ instead of R. You can use the same optimizers with the C++ code that you use with your R function, and although the C++ Code and the R code involve slightly different syntax, they are structured similarly.
+
+### Inputs to the C++ Function
+The C++ code uses named inputs akin to the way we defined our parameter inputs in our final jnll function in R, where the function looked specifically for named parameters like "mean". In addition to naming the parameters, we also name our data inputs-- this is because in future work in TMB, you'll probably have (at least) two kinds of data you want to keep straight-- the column that represents your dependent variable, and the data table/matrix of values that correspond to your covariates. In general, a common convention is to use the suffix "i" if the data is 1-dimensional (just a column), and the suffix "ij" if the data is 2 dimensional (like a data set of covariates). 
+
+To prepare our data for use with TMB, we first need to create named objects with our "first guess" at their starting values, and a list that explicily names our data set. 
+```{r}
+Params <- list("mean"=0, "log_sd"=0)
+Data <- list("y_i"=simulated_data$sim_norm)
+```
+
+Next, we need to write some C++ code that calculates the JNLL based on our distribution, parameters, and data. 
+
+Let's take a look at the completed C++ file to discover the mean and standard deviation of this data set, and then break down each component. 
+
+```{r, eval=FALSE}
+#include <TMB.hpp>
+template<class Type>
+Type objective_function<Type>::operator() () 
+{ 
+  // Data
+  DATA_VECTOR( y_i ); 
+
+  // Parameters
+  PARAMETER( mean );
+  PARAMETER( log_sd );
+  
+  Type sd = exp(log_sd);
+  Type jnll = 0;
+  int n_data = y_i.size();
+
+  // Probability of data conditional on parameter values
+  for( int i=0; i<n_data; i++){ 
+     jnll -= dnorm( y_i(i), mean, sd, true );
+  }
+  
+  return jnll;
+}
+```
+
+Not so bad, eh?  One thing to note is that "\\" denotes a comment in C++, just the way R uses "#"" for the same function. It's helpful to know the following things when writing in C++ for TMB (these will make more sense as we break down what's in the C++ file):
+
+* Each line that isn't a comment, or a bracket ("{" or "}") needs to end with a semicolon (";").
+
+* C++ needs to know what to expect. Unlike R, C++ _needs_ to have its objects and data types/classes clearly defined. As such, you can't just create a variable in your C++ code-- you need to know ahead of time what kind of data it's going to be. If it is going to remain static, and is an ingeger, you can define a number that can be used (static and unchanging) for the rest of the script. However, if something is going to change over the course of the function/C++ script, it is usually of the type "Type". 
+
+* Loops are super, super fast, so you probably don't have to worry about creating a loop structure in your code. 
+
+
+Now that we're acquainted with the basics, let's take a deeper dive into each component of the above code.
+The first block of code loads in the TMB C++ library, and defines what follows as an "objective function" that R will be able to use. To use TMB, always *include the following text above every C++ script*:
+```{r, eval=FALSE}
+#include <TMB.hpp> //This is the equivalent of loading a library
+template<class Type>
+Type objective_function<Type>::operator() () 
+{ //this says that the objective fn is starting now
+```
+
+Next, we define our data inputs, and tell the C++ file what specific parameters to look for.
+
+We are pointing the code to look for a data vector named "y_i", as well as values for two parameters-- one named "mean", and one named "log-sd".
+
+```{r,eval=F}
+ // Data 
+  DATA_VECTOR( y_i ); //Note that this is the exact same name as what is in the R code version list.
+
+  // Parameters
+  PARAMETER( mean ); //tells C++ to look for named parameters "mean" and "log_sd"
+  PARAMETER( log_sd );
+```
+
+This next section is where we calculate any downstream values/do any transformations that are required before the numbers passed from the optimizer (in this case, the values for mean and log_sd) are entered into the actual objective function. So, here, we need to make sure that we exponentiate the standard deviation parameter. 
+
+With "Type sd = exp(log_sd)", we are creating an object of type "Type", called "sd", that is the exponentiated version of the log-sd parameter that gets passed through the optimizer. 
+
+We also define the variable jnll as the number 0 (data type "Type"), from which we will subtract the log-likelihood for each data point.
+
+Next, we calculate the length of the vector y-i, which allows us to iterate through the right number of data points when calculating JNLL. 
+
+```{r,eval=F}
+  Type sd = exp(log_sd);
+  Type jnll = 0; 
+  int n_data = y_i.size();
+```
+
+Now, it's time to actually calculate the Negative Log-Likelihood for each individual data point.
+
+This calculates (in a loop), the log-likelihood of each point, given the paramaters (mean and sd, in this case). Note that the iteration goes from 0 (C++ indexes from 0, while R indexes from 1), and as such, it must start at 0 and end at 1-n-- this is accomplished by the equivalent of a "while" loop, where it keeps iterating from 0 to 1-n. 
+
+Although functions like dnorm() often have the same syntax as functions in R, this is not always the case- always check the TMB documentaion for these functions before finalizing your results.
+```{r, eval=F}
+  for( int i=0; i<n_data; i++){ // iterating 0-(1-n)
+        jnll -= dnorm( y_i(i), mean, sd, true ); //calculate individual data point likelihood, subtract from jnll.
+  } //closing the loop through each data point
+```
+
+Now, we just define what the function returns, and close the function. 
+```{r, eval=F}
+  // Reporting
+  return jnll;
+
+} //closing the function
+```
+
+### Compiling the C++ Code
+
+To use your C++/TMB code, you first need to compile it. On Windows machines, it will create .dll and .o files-- on Macs, it will create a .so file rather than a .dll, or "dynamically linked library". A result of "0" means that the compilation worked, and you can check for the compiled code files in the same directory as the file path you provide for your C++ code. 
+
+```{r}
+compile( "normal_distribution.cpp" ) # compile() is a function within the TMB library
+```
+
+Rather than simply compiling the code, I like to make sure I am using the most up-to-date version of the compiled code-- so, each time I run the code, I look for existing compiled files, and erase them before trying the compile. Since the ".o" file extension is common to both Windows and Macs, I look for that file extension and then eliminate all related extensions. This block of code is an example of that strategy:
+
+```{r}
+# Compile C++ TMB Code
+  cpp_version<-"normal_distribution"
+  if (file.exists(paste0(cpp_version,".o"))) file.remove(paste0(cpp_version,".so"), paste0(cpp_version,".o"),paste0(cpp_version,".dll"))
+  compile(paste0(cpp_version,".cpp")) # Compile that file!
+  if (file.exists(paste0(cpp_version,".o")))   # Check to see if it went through:
+    print("Yep, that seems to have worked!") else stop("Whoah, looks like your code didn't actually compile...")
+```
+
+Now that you've compiled the code, it's ready to use-- however, it isn't linked to R yet. To do this, we need to actually load the "dynamically loaded library" (.dll) into R so that it's ready to use. 
+
+```{r}
+dyn.load(dynlib(cpp_version)) 
+# I use "cpp_version" that I defined above to make sure I'm always 
+# being consistent with what I'm compiling and loading.
+```
+
+### Actually using the CPP file
+
+Now, it's time to take advantage of TMB as a wrapper for C++. With one simple call, MakeADFun(), TMB packages our data, parameters, and objetive function for optimization.
+
+```{r}
+Obj <- MakeADFun(data=Data, parameters=Params, DLL=cpp_version)
+
+```
+
+Now, we can plug this object into R's optimizers-- note that the data component isn't necessary-- it's been wrapped up in the Obj$fn already. There's one more piece that we need to add this time-- the function's _gradient_, which the call MakeAdFun() creates for us. 
+
+From my understanding, the "gradient" is basically the shape and rapidity with which you begin to approach the global minimum (which can pass through local minimums as well) on your optimizer's way to the set of parameters that will minimize your JNLL. This gradient has to do with the second derivative of the function-- the rate of change in JNLL as the optimizer moves towards or away from the "optimal" parameters. 
+
+This gradient function (Gradient based methods take steps to minimize the function in the direction of the gradient-- the direction of the _steepest descent_. Basically, the function looks for the fastest way to get where it wants to go (the minimum!) via the path of least resistance where each step will make the most gains.
+
+This gradient is used by TMB to report standard errors for the parameters it estimates. The faster the optimizer moves away from the minimum when it tinkers with parameters, (the steeper the gradient is near the estimates it comes up with), the more certain the estimates are.
+
+
+```{r}
+Opt<- optim(par=Obj$par, fn=Obj$fn, gradient=Obj$gr)
+```
+
+Let's check out our parameter estimates:
+
+```{r}
+params<-get_params(Opt)
+print(params)
+```
+
+TMB also can report the standard errors of what it estimates using the SDreport() function. Let's check it out:
+```{r}
+sd<-sdreport( Obj ) # standard errors
+sd
+```
+
+This is pretty cool.
+
+Next up-- moving beyond simple distribution parameters onto simple linear models.
 
